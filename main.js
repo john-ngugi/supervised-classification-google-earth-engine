@@ -1,4 +1,10 @@
 
+
+//NDBI = (Band 6 - Band 5) / (Band 6 + Band 5)
+//MSAVI = (2 * Band 5 + 1 – sqrt ((2 * Band 5 + 1)2 – 8 * (Band 5 – Band 4))) / 2.
+//NDWI = (Band 5 – Band 6) / (Band 5 + Band 6)
+
+
 function maskL8sr(image) {
   // Bits 3 and 5 are cloud shadow and cloud, respectively.
   var cloudShadowBitMask = 1 << 3;
@@ -14,12 +20,12 @@ function maskL8sr(image) {
       .copyProperties(image, ["system:time_start"]);
 }
 
-
+// import image collection 
 var imageCollection = ee.ImageCollection("LANDSAT/LC08/C02/T1")
 .filterDate('2017-01-01', '2017-12-31').map(maskL8sr);
 
 
-
+// create the region of interest
 var ROI = table;
 function maskS2clouds(image){
     return image.updateMask(image.select('QA60').eq(0));
@@ -27,12 +33,16 @@ function maskS2clouds(image){
 }
 
 
-
+// get the median image 
 var image = imageCollection
 .median()
 .clip(ROI);
 
+var classification_image = imageCollection.median().clip(kishushe_old);
+
 print(image);
+
+// define the visualization parameters 
 var s2Vis={
   bands: ['B4', 'B3', 'B2'],
   min: 0.143, 
@@ -40,13 +50,51 @@ var s2Vis={
   gamma: 0.39,
 };
 
+// calculate NDVI 
 
-var training = shrubland.merge(forest).merge(bareland).merge(builtup).merge(water).merge(cropland);
+var new_ndvi = classification_image.normalizedDifference(['B4','B5']);
+var new_ndwi = classification_image.normalizedDifference(['B5','B6']);
+var new_ndbi = classification_image.normalizedDifference(['B6','B5']);
+
+var new_msavi = classification_image.expression('(2 * NIR + 1 - sqrt(pow((2 * NIR + 1), 2) - 8 * (NIR - RED)) ) / 2',
+{
+  'NIR':classification_image.select(['B5']),
+  'RED': classification_image.select(['B4']),
+});
+
+print('ndvi',new_ndvi);
+print('ndwi',new_ndwi);
+print('ndbi',new_ndbi);
+print('msavi',new_msavi);
+
+var indexVis = {
+  min:-1,
+  max:1,
+  palette:['red','yellow','green']
+};
+
+var waterindexVis = {
+  min:-1,
+  max:1,
+  palette:['red','yellow','blue','blue']
+};
+
+Map.addLayer(new_ndvi,indexVis,'ndvi');
+Map.addLayer(new_ndwi,waterindexVis,'ndwi');
+Map.addLayer(new_ndbi,indexVis,'ndbi');
+Map.addLayer(new_msavi,indexVis,'msavi');
+
+var newBands = ee.Image([new_ndwi, new_ndvi,new_ndbi,new_msavi]);
+
+classification_image = classification_image.addBands(newBands);
+
+print('image with added_bands',classification_image);
+var training = shrubland.merge(forest).merge(bareland).merge(developed).merge(water);
 print('Training Data:', training);
 print(training);
 var label = 'class';
-var bands=['B2','B3','B4','B5','B6','B10'];
-var input = image.select(bands);
+var bands=['B2','B3','B4','B5','B6','B10','nd','nd_1','nd_2','constant'];
+var input = classification_image.select(bands);
 // Convert string labels to numeric labels
 var numericLabels = ee.List(training.aggregate_array('class')).distinct();
 
@@ -70,7 +118,21 @@ var testSet = trainingData.filter(ee.Filter.greaterThanOrEquals('random', 0.8));
 
 var classifier= ee.Classifier.smileRandomForest(10).train(trainingSet,label,bands);
 
-var classified=input.classify(classifier);
+var ndvi = image.normalizedDifference(['B4','B5']);
+var ndwi = image.normalizedDifference(['B5','B6']);
+var ndbi = image.normalizedDifference(['B6','B5']);
+
+var msavi = image.expression('(2 * NIR + 1 - sqrt(pow((2 * NIR + 1), 2) - 8 * (NIR - RED)) ) / 2',
+{
+  'NIR':image.select(['B5']),
+  'RED': image.select(['B4']),
+});
+
+var newBands_classification = ee.Image([ndwi,ndvi,ndbi,msavi]);
+image = image.addBands(newBands);
+var new_input = image.select(bands);
+var classified = new_input.classify(classifier);
+
 // var anotherClassified = imagecollection.filterBounds(ROI1).median().classify(classifier)
 var landCoverPalette=[
   '#0349d6', // water
@@ -78,12 +140,12 @@ var landCoverPalette=[
   '#0eff5c', // forest
   '#ff0202', // urban
     '111149', // wetlands
-    '#ffd111', // croplands
+    // '#ffd111', // croplands
   // '#bdc234', // barren
 
 ];
 Map.addLayer(image,s2Vis,'image');
-Map.addLayer(classified,{palette:landCoverPalette,min:0,max:6},'classified image');
+Map.addLayer(classified,{palette:landCoverPalette,min:0,max:5},'classified image');
 // Map.addLayer(anotherClassified,{palette:landCoverPalette,min:0,max:3},'another classified image');
 var confusionMatrix = ee.ConfusionMatrix(testSet.classify(classifier).errorMatrix({
   actual:'class',
@@ -123,6 +185,8 @@ Map.addLayer(builtupIMG,{},'builtup',false);
 Map.addLayer(barelandIMG,{},'bareland',false);
 Map.addLayer(waterIMG,{},'water',false);
 Map.addLayer(croplandIMG,{},'cropland',false);
+// Map.addLayer(market_centers,{color:'black'},'markets');
+// Map.addLayer(mining_spots,{color:'red'},'mining_spots');
 
 print(shrublandIMG);
 print(classified);
@@ -169,6 +233,5 @@ var classAreaLists = classAreas.map(function(item) {
  
 var result = ee.Dictionary(classAreaLists.flatten());
 print(result);
-
 
 
